@@ -13,11 +13,29 @@ The terrain generation is done using [Perlin noise](https://flafla2.github.io/20
 
 #### Requirements:
 + Go 1.12 or later (ebiten requirement)
++ dep
 
-Use as any other go code:
+#### Usage
+Get the code:
 ```sh
 go get -u github.com/rubinda/GoWorld
 ```
+Get the dependencies:
+```sh
+cd $GOPATH/src/github.com/rubinda/GoWorld
+dep ensure
+```
+Then, you can choose to either install to `GOBIN`:
+```sh
+go install cmd/goworld/goworld.go
+goworld
+```
+... or build in the source folder:
+```sh
+go build -o GoWorld cmd/goworld/goworld.go
+./GoWorld
+```
+> Note: the last two commands (install or build) assume that you are positined at the root folder of this repository and that the appropriate tools and packages are installed for your OS (in case of Ubuntu `xorg-dev` and `libgl1-mesa-dev` were required)
 
 
 ## License 
