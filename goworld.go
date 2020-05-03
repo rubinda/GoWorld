@@ -43,14 +43,17 @@ type Being struct {
 
 // Food is for now just plants
 type Food struct {
-	GrowthSpeed     float64 // How fast the food will grow (how many epochs to move to the next growth stage)
-	NutritiousValue float64 // How much it decreases the hunger (also possible for minimal thirst decrease)
-	Taste           float64 // Tastier food is preferred among creatures (when not too hungry)
-	GrowthStage     float64 // The current growth phase of the food
-	Area            float64 // How much area it needs to grow
-	Fertility       float64 // How many offspring can be produced
-	LifeExpectancy  float64 // How many epochs it can survive
-	Habitat         float64 // The natural habitat of the plant
+	ID               uuid.UUID // Identifier
+	GrowthSpeed      float64   // How fast the food will grow (how many epochs to move to the next growth stage)
+	NutritionalValue float64   // How much it decreases the hunger (also possible for minimal thirst decrease)
+	Taste            float64   // Tastier food is preferred among creatures (when not too hungry)
+	GrowthStage      float64   // The current growth phase of the food
+	Area             float64   // How much area it needs to grow (taken as diameter of circle)
+	Seeds            float64   // How many offspring can be produced
+	SeedDisperse     float64   // How far can the plant throw seeds
+	Wither           float64   // How many epochs it can survive
+	Habitat          uuid.UUID // The natural habitat of the plant
+	Position         Location  // Static plant location
 	// Aditional rules for plants:
 	//  - a plant has 4 growth stages (each stage has the portion of the defined features, e.g. 25%, 50%, 75%, 100%)
 	//  - beings prefer older plants (if they are not too hunrgy)
@@ -64,11 +67,15 @@ type World interface {
 
 	// Getters
 	GetTerrainImage() *image.RGBA                   // Returns the colored terrain as an image
-	GetBeings() []*Being                            // Returns all beings currently living in the world
+	GetBeings() map[string]*Being                   // Returns all beings currently living in the world map (ID: Being)
+	GetFood() map[string]*Food                      // Get all edible food on the map (ID: Food)
 	GetSurfaceColorAtSpot(spot Location) color.RGBA // Returns the color of the surface at a location
+	GetSize() (int, int)                            // Return width, height of the world
 
-	CreateBeings(quantity int) []*Being // Create random beings and place them (previous beings should remain)
-	CreateRandomBeing() *Being          // Make a random being (predefined attribute ranges)
-	ThrowBeing(b *Being)                // Place the (NEW) being onto a random map (adjusts its habitat to that spot)
-	MoveBeing(b *Being) error           // Make the provided being move randomly across the terrain
+	CreateBeings(quantity int)      // Create random beings and place them (previous beings should remain)
+	CreateRandomBeing() *Being      // Make a random being (predefined attribute ranges)
+	ThrowBeing(b *Being)            // Place the (NEW) being onto a random map (adjusts its habitat to that spot)
+	RandomMoveBeing(b *Being) error // Make the provided being move randomly across the terrain
+
+	ProvideFood(quantity int) // Create edible food with random attributes
 }

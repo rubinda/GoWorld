@@ -5,11 +5,23 @@ import (
 	"github.com/rubinda/GoWorld/terrain"
 )
 
+const (
+	width  = 1000
+	height = 1000
+)
+
 func main() {
+	// Initialize a world
 	world := &terrain.RandomWorld{
-		Width: 1000, Height: 1000,
+		Width: width, Height: height,
 	}
-	world.New()
-	world.CreateBeings(10)
-	display.Run(1000, 1000, world)
+	// Create the terrain
+	_ = world.New()
+	// Add beings
+	world.CreateBeings(20)
+	// Add food
+	world.ProvideFood(100)
+
+	// Run the animation
+	display.Run(world)
 }
