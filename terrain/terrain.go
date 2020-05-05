@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rubinda/GoWorld"
 	"github.com/rubinda/GoWorld/noise"
+	"github.com/rubinda/GoWorld/pathing"
 	"image"
 	"image/color"
 	"image/png"
@@ -18,7 +19,7 @@ import (
 var (
 	// Surfaces are the currently predefined surface types (the 'elevation zones' of the terrain)
 	Surfaces = []Surface{
-		{uuid.New(), "Sea", color.RGBA{R: 116, G: 167, B: 235, A: 255}, false},
+		{uuid.New(), "Water", color.RGBA{R: 116, G: 167, B: 235, A: 255}, false},
 		{uuid.New(), "Grassland", color.RGBA{R: 96, G: 236, B: 133, A: 255}, true},
 		{uuid.New(), "Forest", color.RGBA{R: 44, G: 139, B: 54, A: 255}, true},
 		{uuid.New(), "Gravel", color.RGBA{R: 198, G: 198, B: 198, A: 255}, true},
@@ -33,29 +34,33 @@ var (
 	hungerRange         = &attributeRange{0, 255}
 	thirstRange         = &attributeRange{0, 255}
 	wantsChildRange     = &attributeRange{0, 255}
-	lifeExpectancyRange = &attributeRange{1, 63}
-	visionRange         = &attributeRange{2, 31}
-	speedRange          = &attributeRange{1, 31}
+	lifeExpectancyRange = &attributeRange{1, 64}
+	visionRange         = &attributeRange{1, 32}
+	speedRange          = &attributeRange{1, 32}
 	durabilityRange     = &attributeRange{0, 255}
 	stressRange         = &attributeRange{0, 255}
-	sizeRange           = &attributeRange{1, 2}
+	sizeRange           = &attributeRange{0, 3}
 	fertilityRange      = &attributeRange{0, 7}
 	mutationRange       = &attributeRange{0, 31}
 
 	// Attribute ranges for food
-	growthRange    = &attributeRange{0, 15}
-	nutritionRange = &attributeRange{0, 255}
-	tasteRange     = &attributeRange{0, 255}
-	stageRange     = &attributeRange{0, 3}
-	areaRange      = &attributeRange{1, 32}
-	seedRange      = &attributeRange{1, 16}
-	witherRange    = &attributeRange{1, 256}
-	disperseRange  = &attributeRange{1, 256}
+	growthRange        = &attributeRange{0, 15}
+	nutritionRange     = &attributeRange{0, 255}
+	tasteRange         = &attributeRange{0, 255}
+	stageRange         = &attributeRange{0, 3}
+	stageProgressRange = &attributeRange{0, 255}
+	areaRange          = &attributeRange{1, 16}
+	seedRange          = &attributeRange{1, 16}
+	witherRange        = &attributeRange{1, 256}
+	disperseRange      = &attributeRange{1, 32}
 
 	// Being thresholds for action
-	thirstThreshold     = 100.
-	hungerThreshold     = 150.
-	wantsChildThreshold = 200.
+	hungerThreshold = 150.
+	stressThreshold = 175.
+	// Being increments for basic necessities
+	hungerIncrease     = 0.2
+	thirstIncrease     = 0.3
+	wantsChildIncrease = 0.1
 
 	// Adjacent directions without the center point
 	directions8 = [8]GoWorld.Location{
@@ -91,8 +96,9 @@ type RandomWorld struct {
 	TerrainZones  *image.RGBA // TerrainZones is a colored version of TerrainImage (based on defined zones and ratios)
 	TerrainSpots  [][]*Spot   // TerrainSpots holds data about each spot on the map (what surface, what object or being
 	// occupies it)
-	BeingList map[string]*GoWorld.Being // The list of world inhabitants
-	FoodList  map[string]*GoWorld.Food  // List of all edible food
+	BeingList  map[string]*GoWorld.Being // The list of world inhabitants
+	FoodList   map[string]*GoWorld.Food  // List of all edible food
+	pathFinder GoWorld.Pathfinder
 }
 
 // Spot is a place on the map with a defined surface type.
@@ -110,8 +116,8 @@ type Surface struct {
 	ID         uuid.UUID // The UUID (e.g. '7d444840-9dc0-11d1-b245-5ffdce74fad2'
 	CommonName string    // A common name for it (e.g. 'Forest')
 	// TODO use textures instead of colors
-	Color       color.RGBA // A color value for the appearance
-	Inhabitable bool       // Whether a Being can move across this surface (e.g. Can't walk on moutain peaks or on
+	Color     color.RGBA // A color value for the appearance
+	Habitable bool       // Whether a Being can move across this surface (e.g. Can't walk on moutain peaks or on
 	// water) or if a plant can grow here
 }
 
@@ -142,8 +148,8 @@ func randomGender() string {
 
 }
 
-// IsOutOfBounds check if a location is inside the terrain zone
-func (w *RandomWorld) IsOutOfBounds(location *GoWorld.Location) bool {
+// IsOutOfBounds check if a location is inside the terrain zone. Returns true if location outside the bounds.
+func (w *RandomWorld) IsOutOfBounds(location GoWorld.Location) bool {
 	if location.X < 0 || location.X >= w.Width || location.Y < 0 || location.Y >= w.Height {
 		return true
 	}
@@ -217,6 +223,7 @@ func (w *RandomWorld) CalculateZoneLimits(hist []int, ratios ...float64) []uint8
 			currentBin++
 			if currentBin > 255 {
 				// The last zone has < wanted ratio pixels, stop so we don't get out of range
+				currentBin--
 				break
 			}
 			binSum += float64(hist[currentBin])
@@ -329,62 +336,99 @@ func (w *RandomWorld) ThrowPlant(p *GoWorld.Food) {
 	p.Position.Y = rY
 }
 
-// UpdateBeing decides what the next move of a being is going to be (based on sense whether to eat drink, reproduce)
-// Rules to follow:
-//  1. most important factor is water -> if deciding between multiple quench thirst first
-//  2. food is second most important
-//  3. after that reproduction
-//  4. a being does not know how much life it has left (only the observer knows) -> should not affect decisions
-//  5. move out of natural habitat only when stress levels low enough
-func (w *RandomWorld) UpdateBeing(b *GoWorld.Being) {
+// UpdateBeing executes the next action for the being
+// Returns action done as string and UUIDs of eaten objects / new born beings
+func (w *RandomWorld) UpdateBeing(b *GoWorld.Being) (string, uuid.UUID) {
 	// Check if it is time for the being to die
-	if b.LifeExpectancy <= 0 {
+	fmt.Printf("Updating being %v ", b.ID.String())
+	if b.LifeExpectancy <= 0 || b.Thirst >= 255 || b.Hunger >= 255 {
 		// Being has reached EOL
-		// TODO kill it
+		if b.LifeExpectancy <= 0 {
+			fmt.Println("... died of old age")
+		} else if b.Thirst >= 255 {
+			fmt.Println("... died of thirst")
+		} else if b.Hunger >= 255 {
+			fmt.Println("... died of hunger")
+		}
 		// remove being from BeingList & TerrainSpots
-		return
+		delete(w.BeingList, b.ID.String())
+		w.TerrainSpots[b.Position.X][b.Position.Y].Being = uuid.Nil
+		return "died", b.ID
 	}
-	// Increase the age (== lower life expectancy for 1 epoch)
-	b.LifeExpectancy -= 1
-	// Set when Being has no more actions remaining (can either drink / eat / move or mate in one epoch)
-	actionDone := false
+	// Increase the age (=> lower life expectancy for 1 epoch)
+	b.LifeExpectancy -= 1 / 2 // Age roughly every second (60 FPS)
+	actionDone := "wandered"
+	objectID := uuid.Nil
+	actionToDo, actionSpot := w.SenseActionFor(b)
+	fmt.Println("... wants to ", actionToDo)
+	pathToAction := w.pathFinder.GetPath(b.Position, actionSpot)
+	if len(pathToAction) == 0 {
+		// Todo investigate which paths are not found
+		fmt.Println("path not found for", actionToDo)
+		time.Sleep(1 * time.Second)
+	}
+	switch actionToDo {
+	case "drink":
+		if int(b.Speed) >= len(pathToAction) {
+			// We are fast enough to get to action spot in one move
+			if len(pathToAction) >= 1 {
+				w.MoveBeingToLocation(b, pathToAction[len(pathToAction)-1])
+			}
+			w.QuenchThirst(b)
+		} else {
+			// We see further than we can move in one epoch
+			w.MoveBeingToLocation(b, pathToAction[int(b.Speed)])
+		}
+		actionDone = "drank"
+	case "eat":
+		if int(b.Speed) >= len(pathToAction) {
+			// We are fast enough to get to action spot in one move
+			if len(pathToAction) >= 1 {
+				w.MoveBeingToLocation(b, pathToAction[len(pathToAction)-1])
+			}
+			objectID = w.TerrainSpots[actionSpot.X][actionSpot.Y].OccupyingPlant
+			w.QuenchHunger(b)
+			actionDone = "ate"
 
-	if b.Thirst >= thirstThreshold {
-		// TODO drink water / move toward water (or random if not in sensing range)
-		// on success: Lowers thirst
-		w.QuenchThirst(b)
-		actionDone = true
-	} else if b.Hunger >= hungerThreshold {
-		// TODO eat food / move toward food (or random if not in sensing range)
-		// on success: Lowers hunger and (small chance to lower thirst)
-		actionDone = true
-	} else if b.WantsChild >= wantsChildThreshold {
-		// TODO reproduce / find a mate nearby
-		// on success: slightly increase hunger, thirst
-		actionDone = true
-	}
-	if !actionDone {
-		// Move randomly across the map if no action has been made
-		_ = w.RandomMoveBeing(b)
+		} else {
+			// We see further than we can move in one epoch
+			w.MoveBeingToLocation(b, pathToAction[int(b.Speed)])
+		}
+
+	case "mate":
+		if int(b.Speed) >= len(pathToAction) {
+			// We are fast enough to get to action spot in one move
+			if len(pathToAction) >= 1 {
+				w.MoveBeingToLocation(b, pathToAction[len(pathToAction)-1])
+			}
+			// TODO Reproduce being
+		}
+		// Fixme implement
+		b.WantsChild = 0
+		// TODO return list of new IDs
+		actionDone = "mated"
+	case "wander":
+		w.MoveBeingToLocation(b, actionSpot)
+		actionDone = "wandered"
 	}
 
 	// Update stress:
 	//  increase for higher thirst, hunger and the wish to reproduce, out of natural habitat
 	//  lower for higher size, durability
-	// TODO UpdateStress(being)
-	// Based on stress, higher stress means more sensing range
-	// TODO UpdateSenseRange(being)
+	w.AdjustStressFor(b)
+	w.AdjustNeeds(b)
+	return actionDone, objectID
 }
 
-// RandomMoveBeing moves a being according to Brownian Motion
+// Wander moves a being similar to Brownian Motion
 // Implementation reference: http://people.bu.edu/andasari/courses/stochasticmodeling/lecture5/stochasticlecture5.html
 // I have adjusted the following parameters:
 //  - the time step (delta t) is the speed of each creature
 //  - the previous position is the current position of the being
 //  - the next position is recalculated until a valid one is found
-func (w *RandomWorld) RandomMoveBeing(b *GoWorld.Being) error {
-	dX := math.Sqrt(b.Speed) * rand.NormFloat64()
-	dY := math.Sqrt(b.Speed) * rand.NormFloat64()
+func (w *RandomWorld) Wander(b *GoWorld.Being) error {
+	dX := math.Sqrt(b.Speed) * (rand.NormFloat64() * 5)
+	dY := math.Sqrt(b.Speed) * (rand.NormFloat64() * 5)
 	newX := b.Position.X + int(dX)
 	newY := b.Position.Y + int(dY)
 
@@ -400,8 +444,8 @@ func (w *RandomWorld) RandomMoveBeing(b *GoWorld.Being) error {
 	}
 
 	for !w.canPlaceBeing(newX, newY) {
-		dX = math.Sqrt(b.Speed) * rand.NormFloat64()
-		dY = math.Sqrt(b.Speed) * rand.NormFloat64()
+		dX = math.Sqrt(b.Speed) * (rand.NormFloat64() * 5)
+		dY = math.Sqrt(b.Speed) * (rand.NormFloat64() * 5)
 		newX = b.Position.X + int(dX)
 		newY = b.Position.Y + int(dY)
 
@@ -423,6 +467,7 @@ func (w *RandomWorld) RandomMoveBeing(b *GoWorld.Being) error {
 	// Tell the being where it is going
 	b.Position.X = newX
 	b.Position.Y = newY
+
 	return nil
 }
 
@@ -431,107 +476,215 @@ func (w *RandomWorld) RandomMoveBeing(b *GoWorld.Being) error {
 // (e.g. water or mountain peaks)
 func (w *RandomWorld) canPlaceBeing(x, y int) bool {
 	// First check is the surface allows movement
-	if w.TerrainSpots[x][y].Surface.Inhabitable {
+	if w.TerrainSpots[x][y].Surface.Habitable {
 		// Spot can be moved on, is there perhaps another being present?
 		if w.TerrainSpots[x][y].Being == uuid.Nil {
-			// No being present and walkable, we can safely move a being to this spot
-			// TODO does the being jump to that spot or can a spot on the path to there block it?
+			// No being present and habitable, we can safely move a being to this spot
 			return true
 		}
 	}
-	// Spot was not walkable or a being was present
+	// Spot was not habitable or a being was present
 	return false
+}
+
+// UpdatePlant updates the attributes for plant. It can grow, produce seeds or wither
+// Returns action done as string and list of UUIDs of objects affected by action
+func (w *RandomWorld) UpdatePlant(p *GoWorld.Food) (string, []uuid.UUID) {
+	// Simulation runs at around 60FPS, so wither 2x per second
+	p.Wither -= 1 / 30
+	if p.Wither <= 0 {
+		// Kill the plant :(
+		fmt.Println("Killing plant")
+		delete(w.FoodList, p.ID.String())
+		w.updatePlantSpot(p.Position.X, p.Position.Y, p.Area, uuid.Nil)
+		return "withered", []uuid.UUID{p.ID}
+	}
+	// Make the plant grow if not in last stage
+	if p.GrowthStage <= growthRange.Max {
+		p.StageProgress += p.GrowthSpeed
+	}
+	// If stage progress reaches maximum value, move plant to next stage and produce offspring
+	if p.StageProgress >= stageProgressRange.Max {
+		// Seeds to disperse are based on current stage (max seeds are dispersed when last stage finished
+		seedsProduced := int(p.Seeds * p.GrowthStage / growthRange.Max)
+		// Reset stage progress and increase stage -> can get to maxStage+1
+		p.StageProgress = 0.0
+		p.GrowthStage++
+		// Plant some seeds :)
+		ids := w.DisperseSeeds(p, seedsProduced)
+		// Return
+		return "planted seeds", ids
+	}
+	// Default return
+	return "grew", []uuid.UUID{}
+}
+
+// DisperseSeeds plants seeds within some range from plant
+// Returns UUIDs of newly planted plants
+// TODO 1. place seeds in same habitat only
+// 	2. offspring should be similar to parent in terms of attributes
+func (w *RandomWorld) DisperseSeeds(p *GoWorld.Food, seeds int) []uuid.UUID {
+	var producedIDs []uuid.UUID
+	spots := w.MidpointCircleAt(p.Position, p.Area+p.SeedDisperse)
+	for i := 0; i < seeds; i++ {
+		// Create Random plant, but reset GrowthStage and GrowthProgress
+		seedling := w.RandomPlant()
+		seedling.GrowthStage = 0.0
+		seedling.StageProgress = 0.0
+
+		// Find a location around the parent
+		// SeedDisperse tells how far away from Parent area a seedling can be placed
+
+		// Pick random spot until we find a place to plant
+		// Create an array of available spots which will be deleted
+		unvisitedSpots := make([]int, len(spots))
+		for i := range spots {
+			unvisitedSpots[i] = i
+		}
+		rnd := rand.Intn(len(unvisitedSpots))
+		spotIdx := unvisitedSpots[rnd]
+		foundSpot := true
+		for !w.canPlacePlant(spots[spotIdx].X, spots[spotIdx].Y, seedling.Area) {
+			// Spot was not available for plant, remove it from the unvisited array
+			// unvisitedSpots = append(unvisitedSpots[:rnd], unvisitedSpots[rnd+1:]...)
+			// Cheap way: swap element to delete to last place and keep n-1 elements
+			unvisitedSpots[rnd] = unvisitedSpots[len(unvisitedSpots)-1]
+			unvisitedSpots = unvisitedSpots[:len(unvisitedSpots)-1]
+			if len(unvisitedSpots) == 0 {
+				// No suitable spot found
+				foundSpot = false
+				break
+			}
+
+			// Pick new spot from unvisited
+			rnd = rand.Intn(len(unvisitedSpots))
+			spotIdx = unvisitedSpots[rnd]
+		}
+
+		if foundSpot {
+			// Spot found for our plant! Place it there
+			w.updatePlantSpot(spots[rnd].X, spots[rnd].Y, p.Area, p.ID)
+			seedling.Habitat = w.TerrainSpots[spots[rnd].X][spots[rnd].Y].Surface.ID
+			seedling.Position.X = spots[rnd].X
+			seedling.Position.Y = spots[rnd].Y
+			// Append to food list
+			w.FoodList[seedling.ID.String()] = seedling
+			// ... and to return list
+			producedIDs = append(producedIDs, seedling.ID)
+		}
+	}
+	return producedIDs
 }
 
 // UpdatePlantSpot updates the spot and area with the given plant ID.
 // If uuid.Nil is given, it removes the plant from the world
+// Does not check if spot is valid, use canPlacePlant for that
 func (w *RandomWorld) updatePlantSpot(x, y int, plantDiameter float64, id uuid.UUID) {
 	// Set the center of the plant
 	w.TerrainSpots[x][y].Object = id
 
-	// Radius is rounded, so we get area diameter +-1 (close enough)
-	r := int(math.Round(plantDiameter / 2))
-	// My 'sophisticated' for loops to check a circular area around the center point (x,y)
-	// FIXME this function checks a diamond not a circle ...
-	// Notes:
-	//  - allows the plant to extend over terrain image edge
-	//  - allows the plant to have its growing area on inhabitable zones (but not the center)
-	var sx int // sx or signedX takes care of sign reversal when cx moves from negative to positive
-	for cx := -r; cx <= r; cx++ {
-		// circleX ranges [-r, r]
-		if cx+x < 0 || cx+x >= w.Width {
-			// Allow the plant to grow outside the viewport (widthwise)
-			continue
-		}
-		sx = x
-		if cx < 0 {
-			// Adjust the sign of x when negative (simplifies the code as only 1 for loop is necessary
-			sx = -x
-		}
-		// Y should run based on X, when X = -r, Y should be just one point (X-R, Y),
-		// when X = -R+1, Y has 3 possible values: (X-R+1, Y-1), (X-R+1, Y), (X-R+1, Y+1), and so on for
-		// X = ...
-		for cy := -(r - sx); cy <= r-sx; cy++ {
-			if y+cy < 0 || y+cy >= w.Height {
-				// Allow the plant to grow outside the viewport (heightwise)
-				continue
-			}
-			// Set the occupying plant
-			w.TerrainSpots[x+cx][y+cy].OccupyingPlant = id
+	// Get the circular spots
+	circleSpots := w.MidpointCircleAt(GoWorld.Location{X: x, Y: y}, plantDiameter/2)
+
+	// Update the occupying ID of those spots
+	for _, spot := range circleSpots {
+		w.TerrainSpots[spot.X][spot.Y].OccupyingPlant = id
+	}
+}
+
+// MidpointCircleAt creates a circle with the provided coordinates as the middle point and the radius.
+// Returns a list of locations for the filled circle (including midpoint). If circle extends over world edges, then
+// those locations are filtered out
+func (w *RandomWorld) MidpointCircleAt(center GoWorld.Location, radius float64) []GoWorld.Location {
+	// The final spots
+	var circleSpots []GoWorld.Location
+
+	// Round the radius to closest int and initialize x with it
+	x := int(math.Round(radius))
+	y := 0
+
+	// The midpoint circle algorithm calculates the arc values for octaves and translates onto opposite ones,
+	// by using the 2 opposite points as line ends we can fill a circle
+	for xi := center.X - x; xi <= center.X+x; xi++ {
+		spot := GoWorld.Location{X: xi, Y: center.Y + y}
+		if oob := w.IsOutOfBounds(spot); !oob {
+			circleSpots = append(circleSpots, spot)
 		}
 	}
+	// Initialize the value of P
+	P := 1 - int(math.Round(radius))
+
+	// Loop while we are on the rise
+	for x >= y {
+		y++
+		// Is the mid point inside or on the perimeter?
+		if P < 0 {
+			// Inside
+			P = P + 2*y + 1
+		} else {
+			// Outside the perimeter
+			x--
+			P = P + 2*y - 2*x + 1
+		}
+		if x < y {
+			break
+		}
+		// Store the points
+		for xi := -x + center.X; xi <= x+center.X; xi++ {
+			spot := GoWorld.Location{X: xi, Y: center.Y + y}
+			oppositeSpot := GoWorld.Location{X: xi, Y: center.Y - y}
+			// Check if valid spots (not out of bounds) and add them to the list
+			if oob := w.IsOutOfBounds(spot); !oob {
+				circleSpots = append(circleSpots, spot)
+			}
+			if oob := w.IsOutOfBounds(oppositeSpot); !oob {
+				circleSpots = append(circleSpots, oppositeSpot)
+			}
+		}
+		if x != y {
+			// When x == y we reached 45 degrees (octave), the points change
+			for xi := -y + center.X; xi <= y+center.X; xi++ {
+				spot := GoWorld.Location{X: xi, Y: center.Y + x}
+				oppositeSpot := GoWorld.Location{X: xi, Y: center.Y - x}
+				// Check if valid spots (not out of bounds) and add them to the list
+				if oob := w.IsOutOfBounds(spot); !oob {
+					circleSpots = append(circleSpots, spot)
+				}
+				if oob := w.IsOutOfBounds(oppositeSpot); !oob {
+					circleSpots = append(circleSpots, oppositeSpot)
+				}
+			}
+		}
+	}
+	return circleSpots
 }
 
 // canPlacePlant checks if a plant with certain size can grow on the given location
 // Couple of rules:
-//  - the plant center must be in a inhabitable zone
+//  - the plant center must be in a habitable zone
 //  - the growing area is perceived as a circle around the center, with plant.GrowthArea being the circle diameter
 //    for simplicity sake the radius is rounded (meaning we get diameter +- 1 of space used)
 //  - the growing circular area is allowed to extend over the viewport or into inhabitable zones
 // Method returns false if any of the previous conditions are not fulfilled
 func (w *RandomWorld) canPlacePlant(x, y int, plantArea float64) bool {
 	// Check if surface allows plants to grow
-	if w.TerrainSpots[x][y].Surface.Inhabitable {
+	if w.TerrainSpots[x][y].Surface.Habitable {
 		// Spot can be planted on, is it occupied by a plant?
 		if w.TerrainSpots[x][y].OccupyingPlant == uuid.Nil {
 			// Current spot is free, check the circle with radius plantArea if enough space provided
-			// For simplicity rename some variables and round the area
-			r := int(math.Round(plantArea / 2)) // the circle radius (round for closest value)
-			// My 'sophisticated' for loops to check a circular area around the center point (x,y)
-			// FIXME this function checks a diamond not a circle ...
-			// Notes:
-			//  - allows the plant to extend over terrain image edge
-			//  - allows the plant to have its growing area on inhabitable zones (but not the center)
-			var sx int // sx or signedX takes care of sign reversal when cx moves from negative to positive
-			for cx := -r; cx <= r; cx++ {
-				// circleX ranges [-r, r]
-				if cx+x < 0 || cx+x >= w.Width {
-					// Allow the plant to grow outside the viewport (widthwise)
-					continue
-				}
-				sx = x
-				if cx < 0 {
-					// Adjust the sign of x when negative (simplifies the code as only 1 for loop is necessary
-					sx = -x
-				}
-				// Y should run based on X, when X = -r, Y should be just one point (X-R, Y),
-				// when X = -R+1, Y has 3 possible values: (X-R+1, Y-1), (X-R+1, Y), (X-R+1, Y+1), and so on for
-				// X = ...
-				for cy := -(r - sx); cy <= r-sx; cy++ {
-					if y+cy < 0 || y+cy >= w.Height {
-						// Allow the plant to grow outside the viewport (heightwise)
-						continue
-					}
-					if w.TerrainSpots[x+cx][y+cy].OccupyingPlant != uuid.Nil {
-						return false
-					}
+			// The radius should always be >= 1
+			spots := w.MidpointCircleAt(GoWorld.Location{X: x, Y: y}, plantArea/2)
+			for _, spot := range spots {
+				if w.TerrainSpots[spot.X][spot.Y].OccupyingPlant != uuid.Nil {
+					// Found a plant occupying a spot
+					return false
 				}
 			}
-			// The whole area was found with no occupying plants, we can plant here
+			// The necessary spots are not occupied
 			return true
 		}
 	}
-	// Surface not inhabitable or plant already occupying the necessary area to grow
+	// Surface not habitable or plant already occupying the necessary area to grow
 	return false
 }
 
@@ -545,6 +698,9 @@ func (w *RandomWorld) New() error {
 	// Initialize the food and being map
 	w.BeingList = make(map[string]*GoWorld.Being)
 	w.FoodList = make(map[string]*GoWorld.Food)
+
+	// Set the pathfinder
+	w.pathFinder = pathing.NewPathfinder(w)
 
 	// Initialize the empty images of the terrain
 	rect := image.Rect(0, 0, w.Width, w.Height)
@@ -580,7 +736,7 @@ func (w *RandomWorld) New() error {
 		}
 	}
 	// Calculate at which height (0-255 grayscale) a zone begins and ends with custom ratios for each zone
-	zoneLimits := w.CalculateZoneLimits(hist, 0.40, 0.35, 0.15, 0.025, 0.025, 0.05)
+	zoneLimits := w.CalculateZoneLimits(hist, 0.30, 0.40, 0.10, 0.15, 0.025, 0.025)
 
 	var c color.RGBA
 	for x := 0; x < w.Width; x++ {
@@ -623,6 +779,7 @@ func (w *RandomWorld) RandomPlant() *GoWorld.Food {
 	f.NutritionalValue = nutritionRange.randomFloat()
 	f.Taste = tasteRange.randomFloat()
 	f.GrowthStage = float64(stageRange.randomInt()) // keep as float for possible future expandability
+	f.StageProgress = stageProgressRange.randomFloat()
 	f.Area = areaRange.randomFloat()
 	f.Seeds = seedRange.randomFloat()
 	f.SeedDisperse = disperseRange.randomFloat()
@@ -662,62 +819,250 @@ func (w *RandomWorld) GetSurfaceColorAtSpot(spot GoWorld.Location) color.RGBA {
 	return w.TerrainSpots[spot.X][spot.Y].Surface.Color
 }
 
-// MoveBeingTo moves the being closer to the Spot
+// GetSurfaceNameAt returns the common name of the surface at the provided location
+// Panics if location is out of bound
+func (w *RandomWorld) GetSurfaceNameAt(location GoWorld.Location) (string, error) {
+	if w.IsOutOfBounds(location) {
+		return "", fmt.Errorf(
+			"error providing color at spot: the location (%d, %d) is out of bounds. WorldSize (%v, %v)",
+			location.X, location.Y, w.Width, w.Height)
+	}
+	return w.TerrainSpots[location.X][location.Y].Surface.CommonName, nil
+}
+
+// GetBeingAt returns the ID of the being at the provided location
+// Returns uuid.Nil if no being present
+func (w *RandomWorld) GetBeingAt(location GoWorld.Location) (uuid.UUID, error) {
+	if w.IsOutOfBounds(location) {
+		return uuid.Nil, fmt.Errorf(
+			"error providing being at spot: the location (%d, %d) is out of bounds. WorldSize (%v, %v)",
+			location.X, location.Y, w.Width, w.Height)
+	}
+	return w.TerrainSpots[location.X][location.Y].Being, nil
+}
+
+// GetFoodWithID returns an item from the food list with given ID.
+// Returns nil if ID does not exist
+func (w *RandomWorld) GetFoodWithID(id uuid.UUID) *GoWorld.Food {
+	if f, ok := w.FoodList[id.String()]; ok {
+		return f
+	}
+	return nil
+}
+
+// IsHabitable returns if the provided spot allows movement and seeding plants
+func (w *RandomWorld) IsHabitable(location GoWorld.Location) (bool, error) {
+	if w.IsOutOfBounds(location) {
+		return false, fmt.Errorf(
+			"error checking inhabitable spot: the location (%d, %d) is out of bounds. WorldSize (%v, %v)",
+			location.X, location.Y, w.Width, w.Height)
+	}
+	return w.TerrainSpots[location.X][location.Y].Surface.Habitable, nil
+}
+
+// SenseActionFor uses the sense range of the being to decide on its next action
 // Rules:
-//  - check Object first, move toward it (e.g. move to edible food)
-//  - check Being Second (move to a adjacent field of the being)
-//  - check Surface third (e.g. water to take a drink)
-// Returns an error if for some reason we can not move to that place
-// FIXME currently we assume the being can get to the place in one move, meaning: maxSenseDistance = speed, implement a
-// 	pathing algorithm and move just speed fields closer to the desired spot
-func (w *RandomWorld) MoveBeingTo(b *GoWorld.Being, spot *Spot) error {
-	if spot.Object != uuid.Nil {
-		// Check where to object is located and move on top of it
-		food := w.FoodList[spot.Object.String()]
-		w.TerrainSpots[b.Position.X][b.Position.Y].Being = uuid.Nil
-		if w.TerrainSpots[food.Position.X][food.Position.Y].Being != uuid.Nil {
-			// Other being is already present
-			return fmt.Errorf("error moving being to spot: another being is already present")
+//  1. priorities are in this order: drinks, food, mating, stress
+//  2. if any value is above threshold prefer its action, in case many are above threshold follow the previous order
+//  3. if stress is above threshold and can not eat/drink or mate try to move to natural habitat
+//  4. if nothing in sensing range, or all need fulfilled (values at 0) move randomly
+// Returns action to do as string and the location it picked for the action
+func (w *RandomWorld) SenseActionFor(b *GoWorld.Being) (string, GoWorld.Location) {
+	// Get the spots that are visible to the being
+	// Vision range is influenced by stress:
+	//  a stress value of 0 represents the beings natural senses, stress of maxStress represents sense range * 2
+	stressShare := 1 + b.Stress/stressRange.Max
+	surroundings := w.MidpointCircleAt(b.Position, b.VisionRange*stressShare)
+	// Get the attribute that is most needed (highest threshold value
+	actionToDo := "wander"
+	actionThreshold := 0.0
+	// Find out which of 3 basic needs has highest threshold (if > 0)
+	// If they have the same threshold if will prefer thirst over hunger over child wishes
+	if b.Thirst >= b.Hunger {
+		// Thirst is more than hunger (if same prefer thirst)
+		if b.Thirst >= b.WantsChild {
+			// Being needs water more than other basic necessities
+			actionToDo = "drink"
+			actionThreshold = b.Thirst
+		} else {
+			// Being wants child more than water
+			actionToDo = "mate"
+			actionThreshold = b.WantsChild
 		}
-		// Occupy spot
-		w.TerrainSpots[food.Position.X][food.Position.Y].Being = b.ID
-		b.Position.X = food.Position.X
-		b.Position.Y = food.Position.Y
-		return nil
-	} else if spot.Being != uuid.Nil {
-		// Pick any (suitable) adjacent field
-		otherBeing := w.BeingList[spot.Being.String()]
-		var chosenSpot *GoWorld.Location
-		for _, d := range directions8 {
-			chosenSpot = &GoWorld.Location{X: otherBeing.Position.X + d.X, Y: otherBeing.Position.Y + d.Y}
-			if !w.IsOutOfBounds(chosenSpot) {
-				// Check if surface is walkable and no being present
-				if w.TerrainSpots[chosenSpot.X][chosenSpot.Y].Surface.Inhabitable &&
-					w.TerrainSpots[chosenSpot.X][chosenSpot.Y].Being == uuid.Nil {
-					// Safe to move there
-					w.TerrainSpots[b.Position.X][b.Position.Y].Being = uuid.Nil
-					w.TerrainSpots[chosenSpot.X][chosenSpot.Y].Being = b.ID
-					b.Position.X = chosenSpot.X
-					b.Position.Y = chosenSpot.Y
-					return nil
+	} else {
+		// Being is needs food more than water
+		if b.Hunger >= b.WantsChild {
+			// Being has highest need for food
+			actionToDo = "eat"
+			actionThreshold = b.Hunger
+		} else {
+			// Being wants to have a child more than food or water
+			actionToDo = "mate"
+			actionThreshold = b.WantsChild
+		}
+	}
+	// If the highest threshold was 0 reset the action to wander (being has needs fulfilled)
+	if actionThreshold <= 0 {
+		actionToDo = "wander"
+	}
+
+	// Check the surrounding spots for a suitable place to execute the action
+	chosenSpot := GoWorld.Location{}
+	chosenMetric := 0.0
+	spotUnset := true
+	for _, spot := range surroundings {
+		switch actionToDo {
+		case "drink":
+			// Find the closest water spot
+			if w.TerrainSpots[spot.X][spot.Y].Surface.CommonName == "Water" {
+				if spotUnset {
+					// Set the first spot found
+					chosenSpot.X = spot.X
+					chosenSpot.Y = spot.Y
+					chosenMetric = w.Distance(b.Position, spot)
+					spotUnset = false
+				} else {
+					// Check if this spot is closer than the chosen one
+					if dist := w.Distance(b.Position, spot); dist < chosenMetric {
+						chosenSpot.X = spot.X
+						chosenSpot.Y = spot.Y
+						chosenMetric = dist
+					}
+				}
+			}
+		case "eat":
+			// If being is too hungry find closest food, otherwise tastiest
+			// FIXME also prefer older food
+			if foodId := w.TerrainSpots[spot.X][spot.Y].Object; foodId != uuid.Nil {
+				if w.TerrainSpots[spot.X][spot.Y].Being == uuid.Nil {
+					// Found food with no being on it
+					if spotUnset {
+						chosenSpot.X = spot.X
+						chosenSpot.Y = spot.Y
+						// Being wants something tasty
+						// Convert to minimization problem for code simplicity
+						chosenMetric = tasteRange.Max - w.FoodList[foodId.String()].Taste
+						if b.Hunger >= hungerThreshold {
+							// Being is too hungry to care about taste
+							chosenMetric = w.Distance(b.Position, spot)
+						}
+						spotUnset = false
+					} else {
+						// Convert to minimization problem for code simplicity
+						thisMetric := tasteRange.Max - w.FoodList[foodId.String()].Taste
+						if b.Hunger >= hungerThreshold {
+							// Being is too hungry to care about taste
+							thisMetric = w.Distance(b.Position, spot)
+						}
+						// Check if this food is better (closer or tastier depending on being)
+						if thisMetric < chosenMetric {
+							chosenSpot.X = spot.X
+							chosenSpot.Y = spot.Y
+							chosenMetric = thisMetric
+						}
+					}
+				}
+			}
+		case "mate":
+			// Find the closest being of opposite gender
+			if beingID := w.TerrainSpots[spot.X][spot.Y].Being; beingID != uuid.Nil {
+				otherBeing := w.BeingList[beingID.String()]
+				// Check if other being has a different gender
+				if otherBeing.Gender != b.Gender {
+					if spotUnset {
+						// Set the first being
+						chosenSpot.X = spot.X
+						chosenSpot.Y = spot.Y
+						chosenMetric = w.Distance(b.Position, spot)
+						spotUnset = false
+					} else {
+						if dist := w.Distance(b.Position, spot); dist < chosenMetric {
+							// This being is closer
+							chosenSpot.X = spot.X
+							chosenSpot.Y = spot.Y
+							chosenMetric = dist
+						}
+					}
 				}
 			}
 		}
-		// If we reach this point no suitable point was found, inform by error
-		return fmt.Errorf("error moving being to spot: the other being has no suitable adjacent fields")
-	} else if spot.Surface.ID != uuid.Nil {
-		// Move to certain surface
-		// Should be always water
-		// TODO use pathing algorithm to find closest water source and move there
-		return fmt.Errorf("error moving being to spot: moving to surface type not implemented")
 	}
+	if spotUnset {
+		// No spot was found, meaning surroundings do not offer the desired place
+		// Wander and try from next spot
+		actionToDo = "wander"
+	}
+
+	if actionToDo == "drink" || actionToDo == "mate" {
+		// The chosen spot is a spot with surface type water or a being is occupying it, choose any free adjacent spot
+		for _, direction := range directions8 {
+			adjacentSpot := GoWorld.Location{X: chosenSpot.X + direction.X, Y: chosenSpot.Y + direction.Y}
+			if !w.IsOutOfBounds(adjacentSpot) {
+				// Spot is not out of bounds
+				if w.TerrainSpots[adjacentSpot.X][adjacentSpot.Y].Surface.Habitable &&
+					w.TerrainSpots[adjacentSpot.X][adjacentSpot.Y].Being == uuid.Nil {
+					// Spot is habitable and not occupied, move to it
+					return actionToDo, adjacentSpot
+				}
+			}
+		}
+		// No suitable spot was found, wander and try again
+		actionToDo = "wander"
+
+	}
+	// FIXME wander should move being according to its speed not maxWander = visionRange
+	if actionToDo == "wander" {
+		// Pick random location from surrounding spots
+		rndSpot := rand.Intn(len(surroundings))
+		for !w.canPlaceBeing(surroundings[rndSpot].X, surroundings[rndSpot].Y) {
+			// Choose another place in surroundings
+			rndSpot = rand.Intn(len(surroundings))
+		}
+		chosenSpot.X = surroundings[rndSpot].X
+		chosenSpot.Y = surroundings[rndSpot].Y
+	}
+	if actionToDo == "wander" && b.Stress >= stressThreshold {
+		// Try to wander to nautral habitat to lower stress
+		// Pick any spot (if exists) of surrounding that are from beings natural habitat
+		for _, spot := range surroundings {
+			if w.TerrainSpots[spot.X][spot.Y].Surface.ID == b.Habitat &&
+				w.TerrainSpots[spot.X][spot.Y].Being == uuid.Nil {
+				// Spot is from natural habitat of being and no being is there
+				chosenSpot.X = spot.X
+				chosenSpot.Y = spot.Y
+				break
+			}
+		}
+	}
+	return actionToDo, chosenSpot
+}
+
+// Distance returns the euclidean distance between two locations. To speed up we leave out the square root
+func (w *RandomWorld) Distance(from, to GoWorld.Location) float64 {
+	return math.Sqrt(math.Pow(float64(from.X-to.X), 2) + math.Pow(float64(from.Y-to.Y), 2))
+}
+
+// MoveBeingToLocation moves the being to the provided location
+func (w *RandomWorld) MoveBeingToLocation(b *GoWorld.Being, to GoWorld.Location) error {
+	// Check if location is valid for being to move to
+	if ok, err := w.IsHabitable(to); !ok {
+		panic(err.Error())
+		return err
+	}
+	// Update the terrain spots with the new being
+	w.TerrainSpots[b.Position.X][b.Position.Y].Being = uuid.Nil
+	w.TerrainSpots[to.X][to.Y].Being = b.ID
+
+	// Update being position
+	b.Position.X = to.X
+	b.Position.Y = to.Y
+
 	return nil
 }
 
 // QuenchThirst tries to drink water if being is located 1 field away from water
 // Returns true when being was able to drink, otherwise returns false
 func (w *RandomWorld) QuenchThirst(b *GoWorld.Being) bool {
-
 	// Set true if water found
 	drank := false
 	for _, d := range directions8 {
@@ -728,13 +1073,13 @@ func (w *RandomWorld) QuenchThirst(b *GoWorld.Being) bool {
 			continue
 		}
 		// Check if surface type is water
-		if w.TerrainSpots[b.Position.X+d.X][b.Position.Y+d.Y].Surface.CommonName == "water" {
+		if w.TerrainSpots[b.Position.X+d.X][b.Position.Y+d.Y].Surface.CommonName == "Water" {
 			drank = true
 			break
 		}
 	}
 	// If Being was able to drink, lower its thirst
-	// TODO being should take sips not lower its thirst completely in one move
+	// TODO being should take sips not lower its thirst completely in one move?
 	if drank {
 		b.Thirst = 0
 	}
@@ -753,7 +1098,6 @@ func (w *RandomWorld) QuenchHunger(b *GoWorld.Being) bool {
 	ate := false
 	// Check every adjacent field if the being is able to eat
 	for _, d := range directions9 {
-		// Check if out of bounds
 		// Check if out of bounds
 		if b.Position.X+d.X < 0 || b.Position.X+d.X >= w.Width ||
 			b.Position.Y+d.Y < 0 || b.Position.Y+d.Y >= w.Height {
@@ -784,4 +1128,55 @@ func (w *RandomWorld) QuenchHunger(b *GoWorld.Being) bool {
 		}
 	}
 	return ate
+}
+
+// AdjustStressFor updates the stress value for the being
+// The highest stress (255) is achieved when all basic necessities (food, drinks, mating) are at 255 and being is
+// outside its natural habitat zone.
+// The basic necessities all give the same amount of stress (multiplier of 0.1667), being outside the natural habitat
+// doubles the stress (0.3333 per necessity)
+// Higher values of being Size lower stress
+func (w *RandomWorld) AdjustStressFor(b *GoWorld.Being) {
+	// Does the being feel safe? 1 for yes, 2 for no (e.g. outside natural habitat)
+	feelsSafe := 1.0
+	if w.TerrainSpots[b.Position.X][b.Position.Y].Surface.ID != b.Habitat {
+		feelsSafe = 2.0
+	}
+	// How much every necessity contributes
+	// (2 * len(basicNecessities) * contribution = 2 * 3 * contribution = 1)
+	c := 1.0 / 6
+	// The biggest beings (terms of size) gets only ~10% of stress compared to smallest being
+	sizeC := 1 - b.Size/(sizeRange.Max*1.1)
+
+	// Update stress
+	// Fixme somehow goes over 255
+	b.Stress = feelsSafe * c * (b.Thirst + b.Hunger + b.WantsChild) * sizeC
+	if b.Stress > 255 {
+		b.Stress = 255
+	}
+}
+
+// AdjustNeeds increases the being needs for the current epoch
+// Higher values lower need for food / drinks:
+//  - Durability
+// Higher values increase need for food / drinks:
+//  - Speed
+//  - Stress
+//  - Size
+func (w *RandomWorld) AdjustNeeds(b *GoWorld.Being) {
+	// Most durable beings (compared to least) need only ~30% food
+	// 0.3 = 1 - x / (x*1.43) for any x
+	durableC := 1 - b.Durability/(durabilityRange.Max*1.43)
+
+	// Increase other values proportional to attribute shares
+	speedC := 1 + b.Speed/(speedRange.Max)
+	stressC := 1 + b.Stress/(stressRange.Max)
+	sizeC := 1 + b.Size/(sizeRange.Max)
+	// Calculate the multiplier for increase per epoch values
+	multiplier := durableC * speedC * stressC * sizeC
+
+	// Update the basic needs with the given multiplier
+	b.Hunger += hungerIncrease * multiplier
+	b.Thirst += thirstIncrease * multiplier
+	b.WantsChild += wantsChildIncrease
 }

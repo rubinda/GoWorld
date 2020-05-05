@@ -48,6 +48,7 @@ type Food struct {
 	NutritionalValue float64   // How much it decreases the hunger (also possible for minimal thirst decrease)
 	Taste            float64   // Tastier food is preferred among creatures (when not too hungry)
 	GrowthStage      float64   // The current growth phase of the food
+	StageProgress    float64   // Percentage toward next growth stage. Resets when reaching next growth stage
 	Area             float64   // How much area it needs to grow (taken as diameter of circle)
 	Seeds            float64   // How many offspring can be produced
 	SeedDisperse     float64   // How far can the plant throw seeds
@@ -66,16 +67,30 @@ type World interface {
 	New() error // create a new world (terrain + creatures + items)
 
 	// Getters
-	GetTerrainImage() *image.RGBA                   // Returns the colored terrain as an image
-	GetBeings() map[string]*Being                   // Returns all beings currently living in the world map (ID: Being)
-	GetFood() map[string]*Food                      // Get all edible food on the map (ID: Food)
-	GetSurfaceColorAtSpot(spot Location) color.RGBA // Returns the color of the surface at a location
-	GetSize() (int, int)                            // Return width, height of the world
+	GetTerrainImage() *image.RGBA                       // Returns the colored terrain as an image
+	GetBeings() map[string]*Being                       // Returns all beings currently living in the world map (ID: Being)
+	GetFood() map[string]*Food                          // Get all edible food on the map (ID: Food)
+	GetSurfaceColorAtSpot(spot Location) color.RGBA     // Returns the color of the surface at a location
+	GetSurfaceNameAt(location Location) (string, error) // Returns the common name belonging to the surface at the location
+	GetBeingAt(location Location) (uuid.UUID, error)    // Returns the being id at the location (or uuid.Nil if no being)
+	GetSize() (int, int)                                // Return width, height of the world
+	IsHabitable(location Location) (bool, error)        // Return if the world is inhabitable at the desired location
+	GetFoodWithID(id uuid.UUID) *Food                   // Returns food with id or nil
+	Distance(from, to Location) float64                 // Return distance between locations
 
-	CreateBeings(quantity int)      // Create random beings and place them (previous beings should remain)
-	CreateRandomBeing() *Being      // Make a random being (predefined attribute ranges)
-	ThrowBeing(b *Being)            // Place the (NEW) being onto a random map (adjusts its habitat to that spot)
-	RandomMoveBeing(b *Being) error // Make the provided being move randomly across the terrain
+	CreateBeings(quantity int)                 // Create random beings and place them (previous beings should remain)
+	CreateRandomBeing() *Being                 // Make a random being (predefined attribute ranges)
+	ThrowBeing(b *Being)                       // Place the (NEW) being onto a random map (adjusts its habitat to that spot)
+	Wander(b *Being) error                     // Make the provided being move randomly across the terrain
+	UpdateBeing(b *Being) (string, uuid.UUID)  // Make the being execute an action based on its needs
+	UpdatePlant(p *Food) (string, []uuid.UUID) // Update plant values, e.g. growth, wither, throw seeds ...
 
 	ProvideFood(quantity int) // Create edible food with random attributes
+}
+
+// Pathfinder is an interface for path finding implementations
+type Pathfinder interface {
+	GetPath(from Location, to Location) []Location // Return a list of neighbouring locations to move to the desired
+	// location
+
 }
