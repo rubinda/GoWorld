@@ -53,6 +53,7 @@ type Food struct {
 	Seeds            float64   // How many offspring can be produced
 	SeedDisperse     float64   // How far can the plant throw seeds
 	Wither           float64   // How many epochs it can survive
+	MutationRate     float64   // How much seedlings can deviate from parent
 	Habitat          uuid.UUID // The natural habitat of the plant
 	Position         Location  // Static plant location
 	// Aditional rules for plants:
@@ -76,16 +77,21 @@ type World interface {
 	GetSize() (int, int)                                // Return width, height of the world
 	IsHabitable(location Location) (bool, error)        // Return if the world is inhabitable at the desired location
 	GetFoodWithID(id uuid.UUID) *Food                   // Returns food with id or nil
+	GetBeingWithID(id uuid.UUID) *Being                 // Returns being that belongs to id or nil
 	Distance(from, to Location) float64                 // Return distance between locations
 
-	CreateBeings(quantity int)                 // Create random beings and place them (previous beings should remain)
-	CreateRandomBeing() *Being                 // Make a random being (predefined attribute ranges)
-	ThrowBeing(b *Being)                       // Place the (NEW) being onto a random map (adjusts its habitat to that spot)
-	Wander(b *Being) error                     // Make the provided being move randomly across the terrain
-	UpdateBeing(b *Being) (string, uuid.UUID)  // Make the being execute an action based on its needs
-	UpdatePlant(p *Food) (string, []uuid.UUID) // Update plant values, e.g. growth, wither, throw seeds ...
+	CreateBeings(quantity int)                  // Create random beings and place them (previous beings should remain)
+	CreateRandomBeing() *Being                  // Make a random being (predefined attribute ranges)
+	ThrowBeing(b *Being)                        // Place the (NEW) being onto a random map (adjusts its habitat to that spot)
+	Wander(b *Being) error                      // Make the provided being move randomly across the terrain
+	UpdateBeing(b *Being) (string, []uuid.UUID) // Make the being execute an action based on its needs
+	UpdatePlant(p *Food) (string, []uuid.UUID)  // Update plant values, e.g. growth, wither, throw seeds ...
 
 	ProvideFood(quantity int) // Create edible food with random attributes
+
+	// Stores being and food information into json files
+	PlantsToJSON(fileName string)
+	BeingsToJSON(fileName string)
 }
 
 // Pathfinder is an interface for path finding implementations

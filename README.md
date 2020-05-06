@@ -35,8 +35,9 @@ goworld
 go build -o GoWorld cmd/goworld/goworld.go
 ./GoWorld
 ```
-> Note: the last two commands (install or build) assume that you are positined at the root folder of this repository and that the appropriate tools and packages are installed for your OS (in case of Ubuntu `xorg-dev` and `libgl1-mesa-dev` were required)
-
+> Note: the last two commands (install or build) assume that you are positined at the root folder of this repository and
+> that the appropriate tools and packages are installed. On macOS High Sierra nothing additional was needed, but in case 
+> of Ubuntu 20.04 `xorg-dev` and `libgl1-mesa-dev` were required)
 
 ## License 
 

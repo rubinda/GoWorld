@@ -132,37 +132,6 @@
   pruneopts = "UT"
   revision = "e56429333abeaa9547acaa946a5250c0fda3684d"
 
-[[projects]]
-  digest = "1:8ee4c6db5d53bb67c6d7833e49ffaa084486aebb26109c4e32a91cf0c5654df5"
-  name = "gonum.org/v1/gonum"
-  packages = [
-    "blas",
-    "blas/blas64",
-    "blas/cblas128",
-    "blas/gonum",
-    "floats",
-    "graph",
-    "graph/internal/ordered",
-    "graph/internal/set",
-    "graph/internal/uid",
-    "graph/iterator",
-    "graph/path/internal/testgraphs",
-    "graph/simple",
-    "internal/asm/c128",
-    "internal/asm/c64",
-    "internal/asm/f32",
-    "internal/asm/f64",
-    "internal/cmplx64",
-    "internal/math32",
-    "lapack",
-    "lapack/gonum",
-    "lapack/lapack64",
-    "mat",
-  ]
-  pruneopts = "UT"
-  revision = "960a37950cca5ec8d1efe76ed4eec9dfe3065bd6"
-  version = "v0.7.0"
-
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
@@ -170,7 +139,6 @@
     "github.com/google/uuid",
     "github.com/hajimehoshi/ebiten",
     "github.com/hajimehoshi/ebiten/ebitenutil",
-    "gonum.org/v1/gonum/graph/path/internal/testgraphs",
   ]
   solver-name = "gps-cdcl"
   solver-version = 1
