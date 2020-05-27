@@ -2,7 +2,7 @@ package pathing
 
 import (
 	"container/heap"
-	"github.com/google/uuid"
+	"fmt"
 	"github.com/rubinda/GoWorld"
 	"math"
 )
@@ -69,17 +69,23 @@ func (n *aStarNode) PathEstimatedCost(to *aStarNode) float64 {
 }
 
 // Return all neighbours we can move to
-func (n *aStarNode) PathNeighbors(w GoWorld.World) []*aStarNode {
+func (n *aStarNode) PathNeighbors(w GoWorld.World, allowInhabitable bool) []*aStarNode {
 	neighbours := []*aStarNode{}
 	// Check the neighbouring spots in 8 directions
 	for _, offset := range directions8 {
 		newX := n.X + offset.X
 		newY := n.Y + offset.Y
 		newLocation := GoWorld.Location{X: newX, Y: newY}
-		occupyingBeing, _ := w.GetBeingAt(newLocation)
-		habitable, _ := w.IsHabitable(newLocation)
+		//occupyingBeing, _ := w.GetBeingAt(newLocation)
+		habitable := false
+		// If we have beings that can move across inhabitable zones check only if point is OOB
+		if allowInhabitable {
+			habitable = !w.IsOutOfBounds(newLocation)
+		} else {
+			habitable, _ = w.IsHabitable(newLocation)
+		}
 		// Check if the neighbouring spot is blocked (surface not passable or being on it)
-		if habitable && occupyingBeing == uuid.Nil {
+		if habitable {
 			// Surface is without a being and can be walked on, add to neighbours
 			neighbours = append(neighbours, &aStarNode{X: newX, Y: newY})
 		}
@@ -98,12 +104,11 @@ func NewPathfinder(world GoWorld.World) GoWorld.Pathfinder {
 }
 
 // GetPath returns a list of locations (moves) towards the desired location
-func (a *AStar) GetPath(from GoWorld.Location, to GoWorld.Location) []GoWorld.Location {
-	//fmt.Println("Path from ", from, "to ", to, " distance: ", a.World.Distance(from, to))
+func (a *AStar) GetPath(from GoWorld.Location, to GoWorld.Location, allowInhabitable bool) []GoWorld.Location {
 	// Check if both spots are valid to walk on
 	toHab, _ := a.World.IsHabitable(to)
-	toOccupied, _ := a.World.GetBeingAt(to)
-	if !toHab || toOccupied != uuid.Nil {
+	// If being can move across inhabitable locations
+	if !allowInhabitable && !toHab {
 		// TODO return error and handle it there?
 		// Location to which we want to move is not inhabitable, return an empty path
 		return []GoWorld.Location{}
@@ -120,13 +125,13 @@ func (a *AStar) GetPath(from GoWorld.Location, to GoWorld.Location) []GoWorld.Lo
 	}
 
 	// Find a path using the A* algorithm
-	path, _, found := astar(fromSpot, toSpot, a.World)
+	path, _, found := astar(fromSpot, toSpot, a.World, allowInhabitable)
 	//fmt.Println("path -> locations array")
 	if !found {
 		// TODO return error and handle it there?
 		//n, _ := a.World.GetSurfaceNameAt(to)
 		//fn, _ := a.World.GetSurfaceNameAt(from)
-		////fmt.Println("No path found from ", from, "to ", to)
+		fmt.Println("No path found from ", from, "to ", to)
 		return []GoWorld.Location{}
 	}
 
@@ -147,7 +152,7 @@ func (a *AStar) GetPath(from GoWorld.Location, to GoWorld.Location) []GoWorld.Lo
 // astar calculates a short path and the distance between the two nodes
 // If no path is found, found will be false
 // PATH IS RETURNED IN REVERSE ORDER, FIRST NODE IS TO, LAST IS FROM
-func astar(from, to aStarNode, w GoWorld.World) (path []*aStarNode, distance float64, found bool) {
+func astar(from, to aStarNode, w GoWorld.World, allowInhabitable bool) (path []*aStarNode, distance float64, found bool) {
 	// The open and closed lists from A*
 	// The open list is a priority queue for performance reasons
 	openList := &aStarQueue{indexOf: make(map[int64]int)}
@@ -184,7 +189,7 @@ func astar(from, to aStarNode, w GoWorld.World) (path []*aStarNode, distance flo
 		}
 		// Explore every suitable neighbour of the current node
 
-		for _, neighbour := range currentNode.PathNeighbors(w) {
+		for _, neighbour := range currentNode.PathNeighbors(w, allowInhabitable) {
 			// Calculate the ID if it doesn't exist
 			neighbour.calculateID()
 

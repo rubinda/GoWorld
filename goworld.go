@@ -39,6 +39,10 @@ type Being struct {
 	MutationRate float64  // How much the attributes can deviate
 	Position     Location // Where the creature is currently located in the world
 	// The creature can not move on water (Jesus not implemented yet) or on mountain peaks.
+	Type string // Being type refers to what it can eat and where it can move:
+	//	Flying ... can move anywhere and eats plants plus smaller beings (at most half its size)
+	//  Water ... eats (water plants only) and moves in water, comes to land only to reproduce
+	//  Carnivore ... eats all beings (flying / water / other carnivores) and can use a speed boost when stalking prey
 }
 
 // Food is for now just plants
@@ -56,6 +60,7 @@ type Food struct {
 	MutationRate     float64   // How much seedlings can deviate from parent
 	Habitat          uuid.UUID // The natural habitat of the plant
 	Position         Location  // Static plant location
+	Type             string    // Plant type: water or land
 	// Aditional rules for plants:
 	//  - a plant has 4 growth stages (each stage has the portion of the defined features, e.g. 25%, 50%, 75%, 100%)
 	//  - beings prefer older plants (if they are not too hunrgy)
@@ -76,18 +81,21 @@ type World interface {
 	GetBeingAt(location Location) (uuid.UUID, error)    // Returns the being id at the location (or uuid.Nil if no being)
 	GetSize() (int, int)                                // Return width, height of the world
 	IsHabitable(location Location) (bool, error)        // Return if the world is inhabitable at the desired location
+	IsOutOfBounds(location Location) bool               // Return true if location is outside the defined area
 	GetFoodWithID(id uuid.UUID) *Food                   // Returns food with id or nil
 	GetBeingWithID(id uuid.UUID) *Being                 // Returns being that belongs to id or nil
 	Distance(from, to Location) float64                 // Return distance between locations
 
-	CreateBeings(quantity int)                  // Create random beings and place them (previous beings should remain)
-	CreateRandomBeing() *Being                  // Make a random being (predefined attribute ranges)
+	CreateCarnivores(quantity int)              // Create random beings and place them (previous beings should remain)
+	CreateFishies(quantity int)                 // Create random beings that live in water
+	CreateFlyers(quantity int)                  // Create random beings that can fly
+	CreateRandomCarnivore() *Being              // Make a random being (predefined attribute ranges)
 	ThrowBeing(b *Being)                        // Place the (NEW) being onto a random map (adjusts its habitat to that spot)
 	Wander(b *Being) error                      // Make the provided being move randomly across the terrain
 	UpdateBeing(b *Being) (string, []uuid.UUID) // Make the being execute an action based on its needs
 	UpdatePlant(p *Food) (string, []uuid.UUID)  // Update plant values, e.g. growth, wither, throw seeds ...
 
-	ProvideFood(quantity int) // Create edible food with random attributes
+	ProvideFood(landPlants, waterPlants int) // Create edible food with random attributes
 
 	// Stores being and food information into json files
 	PlantsToJSON(fileName string)
@@ -96,7 +104,7 @@ type World interface {
 
 // Pathfinder is an interface for path finding implementations
 type Pathfinder interface {
-	GetPath(from Location, to Location) []Location // Return a list of neighbouring locations to move to the desired
+	GetPath(from, to Location, allowInhabitable bool) []Location // Return a list of neighbouring locations to move to the desired
 	// location
 
 }

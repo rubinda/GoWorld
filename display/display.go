@@ -35,10 +35,16 @@ var (
 	carrot *ebiten.Image
 	// Growth stage 0
 	potato *ebiten.Image
+	// Water plants are always the same
+	seaweed *ebiten.Image
 
 	// Gender images
-	manImage   *ebiten.Image
-	womanImage *ebiten.Image
+	manImage        *ebiten.Image
+	womanImage      *ebiten.Image
+	waterManImage   *ebiten.Image
+	waterWomanImage *ebiten.Image
+	airManImage     *ebiten.Image
+	airWomanImage   *ebiten.Image
 
 	// Number of updates called
 	time uint64
@@ -71,16 +77,17 @@ func (bs *BeingSprite) Update() {
 	case "died":
 		delete(beingSprites, ids[0].String())
 		return
-	case "ate":
+	case "ate plant":
 		// Remove the food item from screen (being ate it)
 		delete(foodSprites, ids[0].String())
+	case "ate being":
+		// Remove the being that was eaten
+		delete(beingSprites, ids[0].String())
 	case "mated":
 		// Add the new beings to sprites
 		for _, id := range ids {
 			bs.New(id)
 		}
-	case "drank":
-		// TODO I don't think anything happened with the being?
 	}
 	// Synchronize the positional coordinates with the terrain package
 	bs.x = bs.Being.Position.X
@@ -91,13 +98,18 @@ func (bs *BeingSprite) Update() {
 func (fs *FoodSprite) New(id uuid.UUID) {
 	// Get food from terrain package
 	f := world.GetFoodWithID(id)
+	// Get the food image (differs for water based plants)
+	img := growthStageImage(f.GrowthStage)
+	if f.Type == "Water" {
+		img = seaweed
+	}
 	foodSprites[id.String()] = &FoodSprite{
 		Food:  f,
 		x:     f.Position.X,
 		y:     f.Position.Y,
 		w:     16,
 		h:     16,
-		image: growthStageImage(f.GrowthStage),
+		image: img,
 	}
 }
 
@@ -107,8 +119,25 @@ func (bs *BeingSprite) New(id uuid.UUID) {
 	// Get from terrain package
 	b := world.GetBeingWithID(id)
 	// Check the sex of the baby
-	if b.Gender == "female" {
-		img = womanImage
+	switch t := b.Type; {
+	case t == "Flying":
+		if b.Gender == "male" {
+			img = airManImage
+		} else {
+			img = airWomanImage
+		}
+	case t == "Water":
+		if b.Gender == "male" {
+			img = waterManImage
+		} else {
+			img = waterWomanImage
+		}
+	default:
+		if b.Gender == "male" {
+			img = manImage
+		} else {
+			img = womanImage
+		}
 	}
 	beingSprites[id.String()] = &BeingSprite{
 		Being: b,
@@ -127,12 +156,23 @@ func (fs *FoodSprite) Update() {
 		delete(foodSprites, uuids[0].String())
 	case "planted seeds":
 		// The plant had babies :)
+		if fs.Food.Type != "Water" {
+			fs.image = growthStageImage(fs.Food.GrowthStage)
+		}
 		for _, id := range uuids {
 			fs.New(id)
 		}
 	case "planted fail":
 		// Planting failed, but still plant is in new stage
-		fs.image = growthStageImage(fs.Food.GrowthStage)
+		if fs.Food.Type != "Water" {
+			fs.image = growthStageImage(fs.Food.GrowthStage)
+		}
+	}
+
+	// Synchronize position for water plants
+	if fs.Food.Type == "Water" {
+		fs.x = fs.Food.Position.X
+		fs.y = fs.Food.Position.Y
 	}
 }
 
@@ -185,19 +225,33 @@ func BeingSpriteInit() error {
 	}
 	beingSprites = make(map[string]*BeingSprite)
 
-	// The default color for the being is 'Alien green'
 	// This should always change to a specific gender, but just in case ...
 	img := manImage
 
 	// Initialize the image we will later color as a simple rectangular sprite
 	for _, b := range beings {
-		// Check what gender every being is and update the color accordingly
-		if b.Gender == "male" {
-			img = manImage
-		} else if b.Gender == "female" {
-			img = womanImage
+		// Check what type this being is and update the image with respect of gender
+		switch t := b.Type; {
+		case t == "Flying":
+			if b.Gender == "male" {
+				img = airManImage
+			} else {
+				img = airWomanImage
+			}
+		case t == "Water":
+			if b.Gender == "male" {
+				img = waterManImage
+			} else {
+				img = waterWomanImage
+			}
+		default:
+			if b.Gender == "male" {
+				img = manImage
+			} else {
+				img = womanImage
+			}
 		}
-		// Paint the simple sprite with the gender based color
+		// Initialize a sprite of the being and store it
 		beingSprites[b.ID.String()] = &BeingSprite{
 			Being: b,
 			x:     b.Position.X,
@@ -217,7 +271,15 @@ func FoodSpriteInit() error {
 	// Store food sprites into map for easy access
 	foodSprites = make(map[string]*FoodSprite)
 
+	// Initialize an image pointer
+	img := potato
 	for _, f := range food {
+		// Find out if we are dealing with land or water plants
+		if f.Type == "Water" {
+			img = seaweed
+		} else {
+			img = growthStageImage(f.GrowthStage)
+		}
 		// Create new food sprite
 		foodSprites[f.ID.String()] = &FoodSprite{
 			Food:  f,
@@ -225,7 +287,7 @@ func FoodSpriteInit() error {
 			y:     f.Position.Y,
 			w:     16,
 			h:     16,
-			image: growthStageImage(f.GrowthStage),
+			image: img,
 		}
 	}
 	return nil
@@ -255,7 +317,7 @@ func update(screen *ebiten.Image) error {
 	for _, s := range beingSprites {
 		s.Update()
 		op.GeoM.Reset()
-		op.GeoM.Translate(float64(s.x), float64(s.y))
+		op.GeoM.Translate(float64(s.x-8), float64(s.y-8))
 		// As of ebiten 1.5.0 alpha DrawImage() always returns nil, so safe to ignore return value
 		_ = screen.DrawImage(s.image, op)
 
@@ -289,14 +351,23 @@ func init() {
 	checkError(err)
 	carrot, _, err = ebitenutil.NewImageFromFile("assets/carrot.png", ebiten.FilterDefault)
 	checkError(err)
+	seaweed, _, err = ebitenutil.NewImageFromFile("assets/seaweed.png", ebiten.FilterDefault)
+	checkError(err)
 
-	manImage, err = ebiten.NewImage(10, 10, ebiten.FilterDefault)
+	// Load being sprites
+	manImage, _, err = ebitenutil.NewImageFromFile("assets/being-male.png", ebiten.FilterDefault)
 	checkError(err)
-	err = manImage.Fill(manBlue)
+	womanImage, _, err = ebitenutil.NewImageFromFile("assets/being-female.png", ebiten.FilterDefault)
 	checkError(err)
-	womanImage, err = ebiten.NewImage(10, 10, ebiten.FilterDefault)
+
+	waterManImage, _, err = ebitenutil.NewImageFromFile("assets/being-male-water.png", ebiten.FilterDefault)
 	checkError(err)
-	err = womanImage.Fill(womanViolet)
+	waterWomanImage, _, err = ebitenutil.NewImageFromFile("assets/being-female-water.png", ebiten.FilterDefault)
+	checkError(err)
+
+	airManImage, _, err = ebitenutil.NewImageFromFile("assets/being-male-flying.png", ebiten.FilterDefault)
+	checkError(err)
+	airWomanImage, _, err = ebitenutil.NewImageFromFile("assets/being-female-flying.png", ebiten.FilterDefault)
 	checkError(err)
 
 	// Start time
