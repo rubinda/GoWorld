@@ -18,11 +18,11 @@ func main() {
 	// Create the terrain
 	_ = world.New()
 	// Add beings
-	world.CreateCarnivores(100)
-	//world.CreateFishies(10)
-	world.CreateFlyers(100)
+	world.CreateCarnivores(15)
+	world.CreateFishies(10)
+	world.CreateFlyers(15)
 	// Add food
-	world.ProvideFood(50, 10)
+	world.ProvideFood(30, 20)
 
 	// Run the animation
 	display.Run(world)

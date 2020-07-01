@@ -2,6 +2,9 @@
 <i>Simulate beings walking, eating, drinking and mating on randomly generated terrain. </i>
 
 # GoWorld 
+
+![](go-world-alpha.gif)
+
 This repository is meant to work as a *simple* simulation of life. Multiple beings can move around the surface and try to survive. It is not a perfect simulation and not many (if any) laws of nature are implemented. Still a fun little project to showcase the capabilities of go.
 
 The terrain generation is done using [Perlin noise](https://flafla2.github.io/2014/08/09/perlinnoise.html), the movement is based on [Brownian motion](https://en.wikipedia.org/wiki/Brownian_motion). Everything else is pretty much randomly generated or chosen.
